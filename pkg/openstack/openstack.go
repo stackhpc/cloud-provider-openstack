@@ -102,6 +102,7 @@ type LoadBalancerOpts struct {
 	IngressHostnameSuffix string              `gcfg:"ingress-hostname-suffix"` // Used with proxy protocol by adding a dns suffix to the load balancer IP address. Default nip.io.
 	MaxSharedLB           int                 `gcfg:"max-shared-lb"`           //  Number of Services in maximum can share a single load balancer. Default 2
 	ContainerStore        string              `gcfg:"container-store"`         // Used to specify the store of the tls-container-ref
+	UseLegacyAPICalls     bool                `gcfg:"use-legacy-api-calls"`    // If true, use legacy API calls to Octavia endpoints
 	// revive:disable:var-naming
 	TlsContainerRef string `gcfg:"default-tls-container-ref"` //  reference to a tls container
 	// revive:enable:var-naming
@@ -204,6 +205,7 @@ func ReadConfig(config io.Reader) (Config, error) {
 	cfg.LoadBalancer.IngressHostnameSuffix = defaultProxyHostnameSuffix
 	cfg.LoadBalancer.TlsContainerRef = ""
 	cfg.LoadBalancer.ContainerStore = "barbican"
+	cfg.LoadBalancer.UseLegacyAPICalls = false
 	cfg.LoadBalancer.MaxSharedLB = 2
 
 	err := gcfg.FatalOnly(gcfg.ReadInto(&cfg, config))

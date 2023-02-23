@@ -57,4 +57,8 @@ type octaviaConfig struct {
 	// (Optional) Flavor ID to create the load balancer.
 	// If empty, the default flavor will be used.
 	FlavorID string `mapstructure:"flavor-id"`
+
+	// (Optional) If the ingress controller should use legacy API calls when creating and updating the load balancer
+	// Default is false.
+	UseLegacyAPICalls bool `mapstructure:"use-legacy-api-calls"`
 }
