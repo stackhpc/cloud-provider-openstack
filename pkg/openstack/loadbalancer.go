@@ -465,6 +465,57 @@ func getListenerProtocol(protocol corev1.Protocol, svcConf *serviceConfig) liste
 	}
 }
 
+func (lbaas *LbaasV2) createUnpopulatedLoadBalancer(name, clusterName string, service *corev1.Service, svcConf *serviceConfig) (*loadbalancers.LoadBalancer, error) {
+	createOpts := loadbalancers.CreateOpts{
+		Name:        name,
+		Description: fmt.Sprintf("Kubernetes external service %s/%s from cluster %s", service.Namespace, service.Name, clusterName),
+		Provider:    lbaas.opts.LBProvider,
+	}
+
+	if svcConf.supportLBTags {
+		createOpts.Tags = []string{svcConf.lbName}
+	}
+
+	if svcConf.flavorID != "" {
+		createOpts.FlavorID = svcConf.flavorID
+	}
+
+	if svcConf.availabilityZone != "" {
+		createOpts.AvailabilityZone = svcConf.availabilityZone
+	}
+
+	vipPort := getStringFromServiceAnnotation(service, ServiceAnnotationLoadBalancerPortID, "")
+	lbClass := lbaas.opts.LBClasses[svcConf.configClassName]
+	if vipPort != "" {
+		createOpts.VipPortID = vipPort
+	} else {
+		if lbClass != nil && lbClass.SubnetID != "" {
+			createOpts.VipSubnetID = lbClass.SubnetID
+		} else {
+			createOpts.VipSubnetID = svcConf.lbSubnetID
+		}
+		if lbClass != nil && lbClass.NetworkID != "" {
+			createOpts.VipNetworkID = lbClass.NetworkID
+		} else if svcConf.lbNetworkID != "" {
+			createOpts.VipNetworkID = svcConf.lbNetworkID
+		} else {
+			klog.V(4).Infof("network-id parameter not passed, it will be inferred from subnet-id")
+		}
+	}
+	// For external load balancer, the LoadBalancerIP is a public IP address.
+	loadBalancerIP := service.Spec.LoadBalancerIP
+	if loadBalancerIP != "" && svcConf.internal {
+		createOpts.VipAddress = loadBalancerIP
+	}
+
+	mc := metrics.NewMetricContext("loadbalancer", "create")
+	loadbalancer, err := loadbalancers.Create(lbaas.lb, createOpts).Extract()
+	if mc.ObserveRequest(err) != nil {
+		return nil, fmt.Errorf("error creating loadbalancer %v: %v", createOpts, err)
+	}
+	return loadbalancer, nil
+}
+
 func (lbaas *LbaasV2) createFullyPopulatedOctaviaLoadBalancer(name, clusterName string, service *corev1.Service, nodes []*corev1.Node, svcConf *serviceConfig) (*loadbalancers.LoadBalancer, error) {
 	createOpts := loadbalancers.CreateOpts{
 		Name:        name,
@@ -1147,6 +1198,16 @@ func (lbaas *LbaasV2) ensureOctaviaPool(lbID string, name string, listener *list
 		klog.V(2).Infof("Pool %s created for listener %s", pool.ID, listener.ID)
 	}
 
+	if lbaas.opts.UseLegacyAPICalls {
+		klog.V(2).Infof("Using legacy API calls to update members for pool %s", pool.ID)
+		var nodePort int = int(port.NodePort)
+
+		if err := openstackutil.SeriallyReconcilePoolMembers(lbaas.lb, pool, nodePort, lbID, nodes); err != nil {
+			return nil, err
+		}
+		return pool, nil
+	}
+	klog.V(2).Infof("Using batch-update API calls to update members for pool %s", pool.ID)
 	curMembers := sets.New[string]()
 	poolMembers, err := openstackutil.GetMembersbyPool(lbaas.lb, pool.ID)
 	if err != nil {
@@ -1889,11 +1950,18 @@ func (lbaas *LbaasV2) ensureOctaviaLoadBalancer(ctx context.Context, clusterName
 			if err != cpoerrors.ErrNotFound {
 				return nil, fmt.Errorf("error getting loadbalancer for Service %s: %v", serviceName, err)
 			}
-
-			klog.InfoS("Creating fully populated loadbalancer", "lbName", lbName, "service", klog.KObj(service))
-			loadbalancer, err = lbaas.createFullyPopulatedOctaviaLoadBalancer(lbName, clusterName, service, nodes, svcConf)
-			if err != nil {
-				return nil, fmt.Errorf("error creating loadbalancer %s: %v", lbName, err)
+			if lbaas.opts.UseLegacyAPICalls {
+				klog.InfoS("Creating unpopulated loadbalancer", "lbName", lbName, "service", klog.KObj(service))
+				loadbalancer, err = lbaas.createUnpopulatedLoadBalancer(lbName, clusterName, service, svcConf)
+				if err != nil {
+					return nil, fmt.Errorf("error creating loadbalancer %s: %v", lbName, err)
+				}
+			} else {
+				klog.InfoS("Creating fully populated loadbalancer", "lbName", lbName, "service", klog.KObj(service))
+				loadbalancer, err = lbaas.createFullyPopulatedOctaviaLoadBalancer(lbName, clusterName, service, nodes, svcConf)
+				if err != nil {
+					return nil, fmt.Errorf("error creating loadbalancer %s: %v", lbName, err)
+				}
 			}
 			createNewLB = true
 		} else {
@@ -1913,8 +1981,9 @@ func (lbaas *LbaasV2) ensureOctaviaLoadBalancer(ctx context.Context, clusterName
 
 	klog.V(4).InfoS("Load balancer ensured", "lbID", loadbalancer.ID, "isLBOwner", isLBOwner, "createNewLB", createNewLB)
 
-	// This is an existing load balancer, either created by occm for other Services or by the user outside of cluster.
-	if !createNewLB {
+	// This is an existing load balancer, either created by occm for other Services or by the user outside of cluster, or
+	// a newly created, unpopulated loadbalancer that needs populating.
+	if !createNewLB || (lbaas.opts.UseLegacyAPICalls && createNewLB) {
 		curListeners := loadbalancer.Listeners
 		curListenerMapping := make(map[listenerKey]*listeners.Listener)
 		for i, l := range curListeners {
