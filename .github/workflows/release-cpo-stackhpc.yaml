@@ -33,4 +33,4 @@ jobs:
 
     - name: build & publish images
       run: |
-        REGISTRY=ghcr.io/stackhpc ARCHS='amd64 arm64' GOOS=linux VERSION=${{ steps.get_version.outputs.VERSION }} make upload-images
+        REGISTRY=ghcr.io/stackhpc ARCHS='amd64 arm64' GOOS=linux VERSION=${{ steps.get_version.outputs.VERSION }} make push-multiarch-images
