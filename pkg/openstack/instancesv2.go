@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 	sysos "os"
+	"regexp"
+	"strings"
 
 	"github.com/gophercloud/gophercloud/v2"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
@@ -107,6 +109,23 @@ func (i *InstancesV2) InstanceShutdown(ctx context.Context, node *v1.Node) (bool
 	return false, nil
 }
 
+func sanitizeLabel(input string) (string, error) {
+	// Replace non-alphanumeric characters (except '-', '_', '.') with '-'
+	reg := regexp.MustCompile(`[^-a-zA-Z0-9_.]+`)
+	sanitized := reg.ReplaceAllString(input, "-")
+
+	// Ensure the label starts and ends with an alphanumeric character
+	sanitized = strings.Trim(sanitized, "-_.")
+
+	// Ensure the label is not longer than 63 characters
+	if len(sanitized) > 63 {
+		sanitized = sanitized[:63]
+	}
+
+	// Convert to lowercase
+	return strings.ToLower(sanitized), nil
+}
+
 // InstanceMetadata returns the instance's metadata.
 func (i *InstancesV2) InstanceMetadata(ctx context.Context, node *v1.Node) (*cloudprovider.InstanceMetadata, error) {
 	srv, err := i.getInstance(ctx, node)
@@ -133,11 +152,16 @@ func (i *InstancesV2) InstanceMetadata(ctx context.Context, node *v1.Node) (*clo
 		return nil, err
 	}
 
+	availabilityZone, err := sanitizeLabel(server.AvailabilityZone)
+	if err != nil {
+		return nil, err
+	}
+
 	return &cloudprovider.InstanceMetadata{
 		ProviderID:    i.makeInstanceID(&server),
 		InstanceType:  instanceType,
 		NodeAddresses: addresses,
-		Zone:          server.AvailabilityZone,
+		Zone:          availabilityZone,
 		Region:        i.region,
 	}, nil
 }
